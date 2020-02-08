@@ -1,5 +1,5 @@
 #import <Foundation/Foundation.h>
-@interface PodsDummy_Pods_realtime : NSObject
+@interface PodsDummy_Pods_RealTime : NSObject
 @end
-@implementation PodsDummy_Pods_realtime
+@implementation PodsDummy_Pods_RealTime
 @end

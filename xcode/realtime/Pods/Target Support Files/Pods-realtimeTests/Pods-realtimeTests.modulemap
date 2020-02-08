@@ -1,5 +1,5 @@
-framework module Pods_realtimeTests {
-  umbrella header "Pods-realtimeTests-umbrella.h"
+framework module Pods_RealTimeTests {
+  umbrella header "Pods-RealTimeTests-umbrella.h"
 
   export *
   module * { export * }

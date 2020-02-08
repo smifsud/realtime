@@ -52,9 +52,14 @@ public enum SocketIOClientOption : ClientOption {
 
     /// If passed `true`, the only transport that will be used will be WebSockets.
     case forceWebsockets(Bool)
+    
+    /// If passed `true`, the WebSocket stream will be configured with the enableSOCKSProxy `true`.
+    case enableSOCKSProxy(Bool)
 
     /// The queue that all interaction with the client should occur on. This is the queue that event handlers are
     /// called on.
+    ///
+    /// **This should be a serial queue! Concurrent queues are not supported and might cause crashes and races**.
     case handleQueue(DispatchQueue)
 
     /// If passed `true`, the client will log debug information. This should be turned off in production code.
@@ -73,8 +78,14 @@ public enum SocketIOClientOption : ClientOption {
     /// The number of times to try and reconnect before giving up. Pass `-1` to [never give up](https://www.youtube.com/watch?v=dQw4w9WgXcQ).
     case reconnectAttempts(Int)
 
-    /// The number of seconds to wait before reconnect attempts.
+    /// The minimum number of seconds to wait before reconnect attempts.
     case reconnectWait(Int)
+    
+    /// The maximum number of seconds to wait before reconnect attempts.
+    case reconnectWaitMax(Int)
+    
+    /// The randomization factor for calculating reconnect jitter.
+    case randomizationFactor(Double)
 
     /// Set `true` if your server is using secure transports.
     case secure(Bool)
@@ -123,6 +134,10 @@ public enum SocketIOClientOption : ClientOption {
             description = "reconnectAttempts"
         case .reconnectWait:
             description = "reconnectWait"
+        case .reconnectWaitMax:
+            description = "reconnectWaitMax"
+        case .randomizationFactor:
+            description = "randomizationFactor"
         case .secure:
             description = "secure"
         case .selfSigned:
@@ -131,6 +146,8 @@ public enum SocketIOClientOption : ClientOption {
             description = "security"
         case .sessionDelegate:
             description = "sessionDelegate"
+        case .enableSOCKSProxy:
+            description = "enableSOCKSProxy"
         }
 
         return description
@@ -168,6 +185,10 @@ public enum SocketIOClientOption : ClientOption {
             value = attempts
         case let .reconnectWait(wait):
             value = wait
+        case let .reconnectWaitMax(wait):
+            value = wait
+        case let .randomizationFactor(factor):
+            value = factor
         case let .secure(secure):
             value = secure
         case let .security(security):
@@ -176,6 +197,8 @@ public enum SocketIOClientOption : ClientOption {
             value = signed
         case let .sessionDelegate(delegate):
             value = delegate
+        case let .enableSOCKSProxy(enable):
+            value = enable
         }
 
         return value

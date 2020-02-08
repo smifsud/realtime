@@ -23,9 +23,7 @@
 import Foundation
 
 /// Defines that a type will be able to parse socket.io-protocol messages.
-public protocol SocketParsable : class {
-    // MARK: Properties
-
+public protocol SocketParsable : AnyObject {
     // MARK: Methods
 
     /// Called when the engine has received some binary data that should be attached to a packet.
@@ -59,7 +57,9 @@ public enum SocketParsableError : Error {
 }
 
 /// Says that a type will be able to buffer binary data before all data for an event has come in.
-public protocol SocketDataBufferable : class {
+public protocol SocketDataBufferable : AnyObject {
+    // MARK: Properties
+
     /// A list of packets that are waiting for binary data.
     ///
     /// The way that socket.io works all data should be sent directly after each packet.
@@ -77,7 +77,7 @@ public extension SocketParsable where Self: SocketManagerSpec & SocketDataBuffer
     internal func parseString(_ message: String) throws -> SocketPacket {
         var reader = SocketStringReader(message: message)
 
-		guard let type = Int(reader.read(count: 1)).flatMap({ SocketPacket.PacketType(rawValue: $0) }) else {
+        guard let type = Int(reader.read(count: 1)).flatMap({ SocketPacket.PacketType(rawValue: $0) }) else {
             throw SocketParsableError.invalidPacketType
         }
 
@@ -88,7 +88,7 @@ public extension SocketParsable where Self: SocketManagerSpec & SocketDataBuffer
         var namespace = "/"
         var placeholders = -1
 
-        if type == .binaryEvent || type == .binaryAck {
+        if type.isBinary {
             if let holders = Int(reader.readUntilOccurence(of: "-")) {
                 placeholders = holders
             } else {
@@ -109,17 +109,14 @@ public extension SocketParsable where Self: SocketManagerSpec & SocketDataBuffer
         if type == .error {
             reader.advance(by: -1)
         } else {
-            while reader.hasNext {
-                if let int = Int(reader.read(count: 1)) {
-                    idString += String(int)
-                } else {
-                    reader.advance(by: -2)
-                    break
-                }
+            while let int = Int(reader.read(count: 1)) {
+                idString += String(int)
             }
+
+            reader.advance(by: -2)
         }
 
-        var dataArray = String(message.utf16[message.utf16.index(reader.currentIndex, offsetBy: 1)..<message.utf16.endIndex])!
+        var dataArray = String(message.utf16[message.utf16.index(reader.currentIndex, offsetBy: 1)...])!
 
         if type == .error && !dataArray.hasPrefix("[") && !dataArray.hasSuffix("]") {
             dataArray = "[" + dataArray + "]"
@@ -143,7 +140,7 @@ public extension SocketParsable where Self: SocketManagerSpec & SocketDataBuffer
     ///
     /// - parameter message: The string that needs parsing.
     /// - returns: A completed socket packet or nil if the packet is invalid.
-    public func parseSocketMessage(_ message: String) -> SocketPacket? {
+    func parseSocketMessage(_ message: String) -> SocketPacket? {
         guard !message.isEmpty else { return nil }
 
         DefaultSocketLogger.Logger.log("Parsing \(message)", type: "SocketParser")
@@ -169,7 +166,7 @@ public extension SocketParsable where Self: SocketManagerSpec & SocketDataBuffer
     ///
     /// - parameter data: The data that should be attached to a packet.
     /// - returns: A completed socket packet if there is no more data left to collect.
-    public func parseBinaryData(_ data: Data) -> SocketPacket? {
+    func parseBinaryData(_ data: Data) -> SocketPacket? {
         guard !waitingPackets.isEmpty else {
             DefaultSocketLogger.Logger.error("Got data when not remaking packet", type: "SocketParser")
 

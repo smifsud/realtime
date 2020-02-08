@@ -26,7 +26,7 @@ import Dispatch
 import Foundation
 
 /// Defines the interface for a SocketIOClient.
-public protocol SocketIOClientSpec : class {
+public protocol SocketIOClientSpec : AnyObject {
     // MARK: Properties
 
     /// A handler that will be called on any event.
@@ -42,6 +42,17 @@ public protocol SocketIOClientSpec : class {
     ///
     /// **Must** start with a `/`.
     var nsp: String { get }
+
+    /// A view into this socket where emits do not check for binary data.
+    ///
+    /// Usage:
+    ///
+    /// ```swift
+    /// socket.rawEmitView.emit("myEvent", myObject)
+    /// ```
+    ///
+    /// **NOTE**: It is not safe to hold on to this view beyond the life of the socket.
+    var rawEmitView: SocketRawView { get }
 
     /// The status of this client.
     var status: SocketIOStatus { get }
@@ -59,7 +70,7 @@ public protocol SocketIOClientSpec : class {
     ///
     /// - parameter timeoutAfter: The number of seconds after which if we are not connected we assume the connection
     ///                           has failed. Pass 0 to never timeout.
-    /// - parameter withHandler: The handler to call when the client fails to connect.
+    /// - parameter handler: The handler to call when the client fails to connect.
     func connect(timeoutAfter: Double, withHandler handler: (() -> ())?)
 
     /// Called when the client connects to a namespace. If the client was created with a namespace upfront,
@@ -81,14 +92,15 @@ public protocol SocketIOClientSpec : class {
     /// Disconnects the socket.
     func disconnect()
 
-    /// Send an event to the server, with optional data items.
+    /// Send an event to the server, with optional data items and optional write completion handler.
     ///
     /// If an error occurs trying to transform `items` into their socket representation, a `SocketClientEvent.error`
     /// will be emitted. The structure of the error data is `[eventName, items, theError]`
     ///
     /// - parameter event: The event to send.
     /// - parameter items: The items to send with this event. May be left out.
-    func emit(_ event: String, _ items: SocketData...)
+    /// - parameter completion: Callback called on transport write completion.
+    func emit(_ event: String, _ items: SocketData..., completion: (() -> ())?)
 
     /// Call when you wish to tell the server that you've received the event for `ack`.
     ///
@@ -134,7 +146,7 @@ public protocol SocketIOClientSpec : class {
     /// - parameter event: The name of the event.
     /// - parameter data: The data that was sent with this event.
     /// - parameter isInternalMessage: Whether this event was sent internally. If `true` it is always sent to handlers.
-    /// - parameter withAck: If > 0 then this event expects to get an ack back from the client.
+    /// - parameter ack: If > 0 then this event expects to get an ack back from the client.
     func handleEvent(_ event: String, data: [Any], isInternalMessage: Bool, withAck ack: Int)
 
     /// Causes a client to handle a socket.io packet. The namespace for the packet must match the namespace of the
@@ -225,7 +237,7 @@ public protocol SocketIOClientSpec : class {
 
 public extension SocketIOClientSpec {
     /// Default implementation.
-    public func didError(reason: String) {
+    func didError(reason: String) {
         DefaultSocketLogger.Logger.error("\(reason)", type: "SocketIOClient")
 
         handleClientEvent(.error, data: [reason])
@@ -315,6 +327,9 @@ public enum SocketClientEvent : String {
 
     /// Emitted every time there is a change in the client's status.
     ///
+    /// The payload for data is [SocketIOClientStatus, Int]. Where the second item is the raw value. Use the second one
+    /// if you are working in Objective-C.
+    ///
     /// Usage:
     ///
     /// ```swift
@@ -323,4 +338,16 @@ public enum SocketClientEvent : String {
     /// }
     /// ```
     case statusChange
+
+    /// Emitted when when upgrading the http connection to a websocket connection.
+    ///
+    /// Usage:
+    ///
+    /// ```swift
+    /// socket.on(clientEvent: .websocketUpgrade) {data, ack in
+    ///     let headers = (data as [Any])[0]
+    ///     // Some header logic
+    /// }
+    /// ```
+    case websocketUpgrade
 }

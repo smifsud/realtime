@@ -26,7 +26,7 @@ import Foundation
 
 /// Protocol that is used to implement socket.io polling support
 public protocol SocketEnginePollable : SocketEngineSpec {
-    /// MARK: Properties
+    // MARK: Properties
 
     /// `true` If engine's session has been invalidated.
     var invalidated: Bool { get }
@@ -34,7 +34,7 @@ public protocol SocketEnginePollable : SocketEngineSpec {
     /// A queue of engine.io messages waiting for POSTing
     ///
     /// **You should not touch this directly**
-    var postWait: [String] { get set }
+    var postWait: [Post] { get set }
 
     /// The URLSession that will be used for polling.
     var session: URLSession? { get }
@@ -51,6 +51,8 @@ public protocol SocketEnginePollable : SocketEngineSpec {
     /// **Do not touch this directly**
     var waitingForPost: Bool { get set }
 
+    // MARK: Methods
+
     /// Call to send a long-polling request.
     ///
     /// You shouldn't need to call this directly, the engine should automatically maintain a long-poll request.
@@ -63,7 +65,7 @@ public protocol SocketEnginePollable : SocketEngineSpec {
     /// - parameter message: The message to send.
     /// - parameter withType: The type of message to send.
     /// - parameter withData: The data associated with this message.
-    func sendPollMessage(_ message: String, withType type: SocketEnginePacketType, withData datas: [Data])
+    func sendPollMessage(_ message: String, withType type: SocketEnginePacketType, withData datas: [Data], completion: (() -> ())?)
 
     /// Call to stop polling and invalidate the URLSession.
     func stopPolling()
@@ -72,12 +74,15 @@ public protocol SocketEnginePollable : SocketEngineSpec {
 // Default polling methods
 extension SocketEnginePollable {
     func createRequestForPostWithPostWait() -> URLRequest {
-        defer { postWait.removeAll(keepingCapacity: true) }
+        defer {
+            for packet in postWait { packet.completion?() }
+            postWait.removeAll(keepingCapacity: true)
+        }
 
         var postStr = ""
 
         for packet in postWait {
-            postStr += "\(packet.utf16.count):\(packet)"
+            postStr += "\(packet.msg.utf16.count):\(packet.msg)"
         }
 
         DefaultSocketLogger.Logger.log("Created POST string: \(postStr)", type: "SocketEnginePolling")
@@ -99,7 +104,7 @@ extension SocketEnginePollable {
     ///
     /// You shouldn't need to call this directly, the engine should automatically maintain a long-poll request.
     public func doPoll() {
-        guard !websocket && !waitingForPoll && connected && !closed else { return }
+        guard polling && !waitingForPoll && connected && !closed else { return }
 
         var req = URLRequest(url: urlPollingWithSid)
         addHeaders(to: &req)
@@ -120,9 +125,12 @@ extension SocketEnginePollable {
 
         doRequest(for: req) {[weak self] data, res, err in
             guard let this = self, this.polling else { return }
-
-            if err != nil || data == nil {
-                DefaultSocketLogger.Logger.error(err?.localizedDescription ?? "Error", type: "SocketEnginePolling")
+            guard let data = data, let res = res as? HTTPURLResponse, res.statusCode == 200 else {
+                if let err = err {
+                    DefaultSocketLogger.Logger.error(err.localizedDescription, type: "SocketEnginePolling")
+                } else {
+                    DefaultSocketLogger.Logger.error("Error during long poll request", type: "SocketEnginePolling")
+                }
 
                 if this.polling {
                     this.didError(reason: err?.localizedDescription ?? "Error")
@@ -133,7 +141,7 @@ extension SocketEnginePollable {
 
             DefaultSocketLogger.Logger.log("Got polling response", type: "SocketEnginePolling")
 
-            if let str = String(data: data!, encoding: .utf8) {
+            if let str = String(data: data, encoding: .utf8) {
                 this.parsePollingMessage(str)
             }
 
@@ -149,7 +157,7 @@ extension SocketEnginePollable {
 
     private func flushWaitingForPost() {
         guard postWait.count != 0 && connected else { return }
-        guard !websocket else {
+        guard polling else {
             flushWaitingForPostToWebSocket()
 
             return
@@ -161,11 +169,14 @@ extension SocketEnginePollable {
 
         DefaultSocketLogger.Logger.log("POSTing", type: "SocketEnginePolling")
 
-        doRequest(for: req) {[weak self] data, res, err in
+        doRequest(for: req) {[weak self] _, res, err in
             guard let this = self else { return }
-
-            if err != nil {
-                DefaultSocketLogger.Logger.error(err?.localizedDescription ?? "Error", type: "SocketEnginePolling")
+            guard let res = res as? HTTPURLResponse, res.statusCode == 200 else {
+                if let err = err {
+                    DefaultSocketLogger.Logger.error(err.localizedDescription, type: "SocketEnginePolling")
+                } else {
+                    DefaultSocketLogger.Logger.error("Error flushing waiting posts", type: "SocketEnginePolling")
+                }
 
                 if this.polling {
                     this.didError(reason: err?.localizedDescription ?? "Error")
@@ -207,14 +218,15 @@ extension SocketEnginePollable {
     /// - parameter message: The message to send.
     /// - parameter withType: The type of message to send.
     /// - parameter withData: The data associated with this message.
-    public func sendPollMessage(_ message: String, withType type: SocketEnginePacketType, withData datas: [Data]) {
+    /// - parameter completion: Callback called on transport write completion.
+    public func sendPollMessage(_ message: String, withType type: SocketEnginePacketType, withData datas: [Data], completion: (() -> ())? = nil) {
         DefaultSocketLogger.Logger.log("Sending poll: \(message) as type: \(type.rawValue)", type: "SocketEnginePolling")
 
-        postWait.append(String(type.rawValue) + message)
+        postWait.append((String(type.rawValue) + message, completion))
 
         for data in datas {
             if case let .right(bin) = createBinaryDataForSend(using: data) {
-                postWait.append(bin)
+                postWait.append((bin, {}))
             }
         }
 

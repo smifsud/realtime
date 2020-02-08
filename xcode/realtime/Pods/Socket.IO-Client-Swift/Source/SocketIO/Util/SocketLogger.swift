@@ -25,7 +25,7 @@
 import Foundation
 
 /// Represents a class will log client events.
-public protocol SocketLogger : class {
+public protocol SocketLogger : AnyObject {
     // MARK: Properties
 
     /// Whether to log or not
@@ -51,17 +51,19 @@ public protocol SocketLogger : class {
 public extension SocketLogger {
     /// Default implementation.
     func log(_ message: @autoclosure () -> String, type: String) {
-        abstractLog("LOG", message: message, type: type)
+        guard log else { return }
+
+        abstractLog("LOG", message: message(), type: type)
     }
 
     /// Default implementation.
     func error(_ message: @autoclosure () -> String, type: String) {
-        abstractLog("ERROR", message: message, type: type)
+        guard log else { return }
+
+        abstractLog("ERROR", message: message(), type: type)
     }
 
     private func abstractLog(_ logType: String, message: @autoclosure () -> String, type: String) {
-        guard log else { return }
-
         NSLog("\(logType) \(type): %@", message())
     }
 }

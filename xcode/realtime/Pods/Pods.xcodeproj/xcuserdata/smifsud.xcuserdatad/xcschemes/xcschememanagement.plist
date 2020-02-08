@@ -4,21 +4,21 @@
 <dict>
 	<key>SchemeUserState</key>
 	<dict>
-		<key>Pods-realtime.xcscheme</key>
-		<dict>
-			<key>isShown</key>
-			<false/>
-			<key>orderHint</key>
-			<integer>0</integer>
-		</dict>
-		<key>Pods-realtimeTests.xcscheme</key>
+		<key>Pods-RealTime-RealTimeUITests.xcscheme</key>
 		<dict>
 			<key>isShown</key>
 			<false/>
 			<key>orderHint</key>
 			<integer>1</integer>
 		</dict>
-		<key>Pods-realtimeUITests.xcscheme</key>
+		<key>Pods-RealTime.xcscheme</key>
+		<dict>
+			<key>isShown</key>
+			<false/>
+			<key>orderHint</key>
+			<integer>0</integer>
+		</dict>
+		<key>Pods-RealTimeTests.xcscheme</key>
 		<dict>
 			<key>isShown</key>
 			<false/>
@@ -38,6 +38,13 @@
 			<false/>
 			<key>orderHint</key>
 			<integer>4</integer>
+		</dict>
+		<key>SwiftLint.xcscheme</key>
+		<dict>
+			<key>isShown</key>
+			<false/>
+			<key>orderHint</key>
+			<integer>5</integer>
 		</dict>
 	</dict>
 	<key>SuppressBuildableAutocreation</key>

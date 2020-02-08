@@ -43,6 +43,8 @@ import Foundation
 /// To disconnect a socket and remove it from the manager, either call `SocketIOClient.disconnect()` on the socket,
 /// or call one of the `disconnectSocket` methods on this class.
 ///
+/// **NOTE**: The manager is not thread/queue safe, all interaction with the manager should be done on the `handleQueue`
+///
 open class SocketManager : NSObject, SocketManagerSpec, SocketParsable, SocketDataBufferable, ConfigSettable {
     private static let logType = "SocketManager"
 
@@ -95,8 +97,14 @@ open class SocketManager : NSObject, SocketManagerSpec, SocketParsable, SocketDa
     /// If `true`, this client will try and reconnect on any disconnects.
     public var reconnects = true
 
-    /// The number of seconds to wait before attempting to reconnect.
+    /// The minimum number of seconds to wait before attempting to reconnect.
     public var reconnectWait = 10
+
+    /// The maximum number of seconds to wait before attempting to reconnect.
+    public var reconnectWaitMax = 30
+
+    /// The randomization factor for calculating reconnect jitter.
+    public var randomizationFactor = 0.5
 
     /// The status of this manager.
     public private(set) var status: SocketIOStatus = .notConnected {
@@ -135,12 +143,6 @@ open class SocketManager : NSObject, SocketManagerSpec, SocketParsable, SocketDa
         self._config = config
         self.socketURL = socketURL
 
-        if socketURL.absoluteString.hasPrefix("https://") {
-            self._config.insert(.secure(true))
-        }
-
-        self._config.insert(.path("/socket.io/"), replacing: false)
-
         super.init()
 
         setConfigs(_config)
@@ -156,6 +158,7 @@ open class SocketManager : NSObject, SocketManagerSpec, SocketParsable, SocketDa
         self.init(socketURL: socketURL, config: config?.toSocketConfiguration() ?? [])
     }
 
+    /// :nodoc:
     deinit {
         DefaultSocketLogger.Logger.log("Manager is being released", type: SocketManager.logType)
 
@@ -169,6 +172,9 @@ open class SocketManager : NSObject, SocketManagerSpec, SocketParsable, SocketDa
 
         engine?.engineQueue.sync {
             self.engine?.client = nil
+
+            // Close old engine so it will not leak because of URLSession if in polling mode
+            self.engine?.disconnect(reason: "Adding new engine")
         }
 
         engine = SocketEngine(client: self, url: socketURL, config: config)
@@ -205,7 +211,7 @@ open class SocketManager : NSObject, SocketManagerSpec, SocketParsable, SocketDa
             return
         }
 
-        engine?.send("0\(socket.nsp)", withData: [])
+        engine?.send("0\(socket.nsp),", withData: [])
     }
 
     /// Called when the manager has disconnected from socket.io.
@@ -233,10 +239,8 @@ open class SocketManager : NSObject, SocketManagerSpec, SocketParsable, SocketDa
     ///
     /// - parameter socket: The socket to disconnect.
     open func disconnectSocket(_ socket: SocketIOClient) {
-        // Make sure we remove socket from nsps
-        nsps.removeValue(forKey: socket.nsp)
+        engine?.send("1\(socket.nsp),", withData: [])
 
-        engine?.send("1\(socket.nsp)", withData: [])
         socket.didDisconnect(reason: "Namespace leave")
     }
 
@@ -245,7 +249,7 @@ open class SocketManager : NSObject, SocketManagerSpec, SocketParsable, SocketDa
     /// This will remove the socket for the manager's control, and make the socket instance useless and ready for
     /// releasing.
     ///
-    /// - parameter forNamespace: The namespace to disconnect from.
+    /// - parameter nsp: The namespace to disconnect from.
     open func disconnectSocket(forNamespace nsp: String) {
         guard let socket = nsps.removeValue(forKey: nsp) else {
             DefaultSocketLogger.Logger.log("Could not find socket for \(nsp) to disconnect",
@@ -286,10 +290,10 @@ open class SocketManager : NSObject, SocketManagerSpec, SocketParsable, SocketDa
     /// Same as `emitAll(_:_:)`, but meant for Objective-C.
     ///
     /// - parameter event: The event to send.
-    /// - parameter withItems: The data to send with this event.
+    /// - parameter items: The data to send with this event.
     open func emitAll(_ event: String, withItems items: [Any]) {
         forAll {socket in
-            socket.emit(event, with: items)
+            socket.emit(event, with: items, completion: nil)
         }
     }
 
@@ -380,6 +384,18 @@ open class SocketManager : NSObject, SocketManagerSpec, SocketParsable, SocketDa
         }
     }
 
+    /// Called when when upgrading the http connection to a websocket connection.
+    ///
+    /// - parameter headers: The http headers.
+    open func engineDidWebsocketUpgrade(headers: [String: String]) {
+        handleQueue.async {
+            self._engineDidWebsocketUpgrade(headers: headers)
+        }
+    }
+     private func _engineDidWebsocketUpgrade(headers: [String: String]) {
+        emitAll(clientEvent: .websocketUpgrade, data: [headers])
+    }
+
     /// Called when the engine has a message that must be parsed.
     ///
     /// - parameter msg: The message that needs parsing.
@@ -391,7 +407,7 @@ open class SocketManager : NSObject, SocketManagerSpec, SocketParsable, SocketDa
 
     private func _parseEngineMessage(_ msg: String) {
         guard let packet = parseSocketMessage(msg) else { return }
-        guard packet.type != .binaryAck && packet.type != .binaryEvent else {
+        guard !packet.type.isBinary else {
             waitingPackets.append(packet)
 
             return
@@ -417,11 +433,24 @@ open class SocketManager : NSObject, SocketManagerSpec, SocketParsable, SocketDa
 
     /// Tries to reconnect to the server.
     ///
-    /// This will cause a `disconnect` event to be emitted, as well as an `reconnectAttempt` event.
+    /// This will cause a `SocketClientEvent.reconnect` event to be emitted, as well as
+    /// `SocketClientEvent.reconnectAttempt` events.
     open func reconnect() {
         guard !reconnecting else { return }
 
         engine?.disconnect(reason: "manual reconnect")
+    }
+
+    /// Removes the socket from the manager's control. One of the disconnect methods should be called before calling this
+    /// method.
+    ///
+    /// After calling this method the socket should no longer be considered usable.
+    ///
+    /// - parameter socket: The socket to remove.
+    /// - returns: The socket removed, if it was owned by the manager.
+    @discardableResult
+    open func removeSocket(_ socket: SocketIOClient) -> SocketIOClient? {
+        return nsps.removeValue(forKey: socket.nsp)
     }
 
     private func tryReconnect(reason: String) {
@@ -452,7 +481,21 @@ open class SocketManager : NSObject, SocketManagerSpec, SocketParsable, SocketDa
         currentReconnectAttempt += 1
         connect()
 
-        handleQueue.asyncAfter(deadline: DispatchTime.now() + Double(reconnectWait), execute: _tryReconnect)
+        let interval = reconnectInterval(attempts: currentReconnectAttempt)
+        DefaultSocketLogger.Logger.log("Scheduling reconnect in \(interval)s", type: SocketManager.logType)
+        handleQueue.asyncAfter(deadline: DispatchTime.now() + interval, execute: _tryReconnect)
+    }
+
+    func reconnectInterval(attempts: Int) -> Double {
+        // apply exponential factor
+        let backoffFactor = pow(1.5, attempts)
+        let interval = Double(reconnectWait) * Double(truncating: backoffFactor as NSNumber)
+        // add in a random factor smooth thundering herds
+        let rand = Double.random(in: 0 ..< 1)
+        let randomFactor = rand * randomizationFactor * Double(truncating: interval as NSNumber)
+        // add in random factor, and clamp to min and max values
+        let combined = interval + randomFactor
+        return Double(fmax(Double(reconnectWait), fmin(combined, Double(reconnectWaitMax))))
     }
 
     /// Sets manager specific configs.
@@ -467,18 +510,29 @@ open class SocketManager : NSObject, SocketManagerSpec, SocketParsable, SocketDa
                 self.handleQueue = queue
             case let .reconnects(reconnects):
                 self.reconnects = reconnects
+            case let .reconnectAttempts(attempts):
+                self.reconnectAttempts = attempts
             case let .reconnectWait(wait):
                 reconnectWait = abs(wait)
+            case let .reconnectWaitMax(wait):
+                reconnectWaitMax = abs(wait)
+            case let .randomizationFactor(factor):
+                randomizationFactor = factor
             case let .log(log):
                 DefaultSocketLogger.Logger.log = log
             case let .logger(logger):
                 DefaultSocketLogger.Logger = logger
-            default:
+            case _:
                 continue
             }
         }
 
         _config = config
+
+        if socketURL.absoluteString.hasPrefix("https://") {
+            _config.insert(.secure(true))
+        }
+
         _config.insert(.path("/socket.io/"), replacing: false)
 
         // If `ConfigSettable` & `SocketEngineSpec`, update its configs.
@@ -499,7 +553,7 @@ open class SocketManager : NSObject, SocketManagerSpec, SocketParsable, SocketDa
     /// Call one of the `disconnectSocket` methods on this class to remove the socket from manager control.
     /// Or call `SocketIOClient.disconnect()` on the client.
     ///
-    /// - parameter forNamespace: The namespace for the socket.
+    /// - parameter nsp: The namespace for the socket.
     /// - returns: A `SocketIOClient` for the given namespace.
     open func socket(forNamespace nsp: String) -> SocketIOClient {
         assert(nsp.hasPrefix("/"), "forNamespace must have a leading /")
